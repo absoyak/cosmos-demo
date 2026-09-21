@@ -4,6 +4,7 @@
 ![WebGL2](https://img.shields.io/badge/WebGL2-GPGPU-ffd38a?style=flat-square)
 ![No dependencies](https://img.shields.io/badge/dependencies-none-5d6a88?style=flat-square)
 ![Single file](https://img.shields.io/badge/single%20file-index.html-5d6a88?style=flat-square)
+[![License: MIT](https://img.shields.io/badge/license-MIT-5d6a88?style=flat-square)](LICENSE)
 
 **A universe in a single HTML file.** Thousands of randomly generated planets attract each other with real
 Newtonian gravity, collide, merge, and — after a few chaotic minutes — settle into a stable solar system
@@ -117,6 +118,10 @@ Measured on an RTX 5070 Ti, time per physics step at the start (before any compa
 | 64 | 40,960 | 1.7 billion | 9.0 |
 
 Requires WebGL2 with `EXT_color_buffer_float` (any desktop GPU from the last decade).
+
+## License
+
+[MIT](LICENSE) © 2026 A. Burak Soyak
 
 ## Keywords
 
