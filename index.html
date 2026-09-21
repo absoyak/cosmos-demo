@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cosmos</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; color: #cfd8ea;
+    font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; }
+  canvas#gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  canvas#gl.drag { cursor: grabbing; }
+  .panel { position: fixed; background: rgba(8, 11, 20, .62); border: 1px solid rgba(140, 170, 255, .16);
+    border-radius: 10px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  #hud { top: 14px; left: 14px; padding: 12px 14px 10px; min-width: 232px; user-select: none; }
+  #hud h1 { margin: 0 0 6px; font-size: 13px; letter-spacing: .42em; font-weight: 600; color: #fff; }
+  #hud table { border-collapse: collapse; width: 100%; }
+  #hud td { padding: 0; white-space: nowrap; }
+  #hud td:first-child { color: #7f8cab; padding-right: 14px; }
+  #hud td:last-child { text-align: right; color: #eef2ff; font-variant-numeric: tabular-nums; }
+  #phase { color: #ffd38a !important; }
+  #spark { display: block; width: 100%; height: 38px; margin-top: 8px; }
+  #foot { margin-top: 6px; color: #5d6a88; font-size: 11px; display: flex; justify-content: space-between; gap: 10px; }
+  #bar { top: 14px; right: 14px; padding: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; max-width: 60vw; justify-content: flex-end; }
+  button, input { font: inherit; color: #dfe6fa; background: rgba(120, 150, 255, .10); border: 1px solid rgba(140, 170, 255, .22);
+    border-radius: 7px; padding: 5px 10px; cursor: pointer; }
+  button:hover { background: rgba(120, 150, 255, .22); }
+  button.on { background: rgba(120, 170, 255, .30); border-color: rgba(160, 190, 255, .55); }
+  input { width: 44px; cursor: text; text-align: center; }
+  label { color: #7f8cab; }
+  #help { bottom: 12px; left: 50%; transform: translateX(-50%); padding: 6px 14px; color: #7f8cab; font-size: 11px;
+    white-space: nowrap; max-width: 96vw; overflow: hidden; text-overflow: ellipsis; }
+  #help b { color: #c9d4f2; font-weight: 500; }
+  #fatal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 30px;
+    background: #05060b; color: #ff9a8a; white-space: pre-wrap; z-index: 10; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="hud" class="panel">
+  <h1>COSMOS</h1>
+  <table>
+    <tr><td>Planets</td><td id="sAlive">–</td></tr>
+    <tr><td>Collisions</td><td id="sHits">–</td></tr>
+    <tr><td>Stars</td><td id="sStars">–</td></tr>
+    <tr><td>Largest mass</td><td id="sBig">–</td></tr>
+    <tr><td>Time</td><td id="sTime">–</td></tr>
+    <tr><td>Phase</td><td id="phase">–</td></tr>
+  </table>
+  <canvas id="spark" width="232" height="38"></canvas>
+  <div id="foot"><span id="sFps">–</span><span id="sGpu"></span></div>
+</div>
+
+<div id="bar" class="panel">
+  <label for="inCosmos">COSMOS</label><input id="inCosmos" type="number" min="4" max="64" step="1">
+  <button id="bNew" title="N">New Universe</button>
+  <button id="bPause" title="Space">Pause</button>
+  <button id="bSpeed" title="+ / −">Speed 1×</button>
+  <button id="bTrails" title="T">Trails</button>
+  <button id="bFollow" title="F">Follow</button>
+  <button id="bOrbit" title="O">Auto-rotate</button>
+</div>
+
+<div id="help" class="panel"><b>Drag</b> rotate · <b>Wheel</b> zoom · <b>Space</b> pause · <b>N</b> new universe ·
+  <b>T</b> trails · <b>F</b> follow the largest star · <b>O</b> auto-rotate · <b>+/−</b> speed · <b>H</b> hide panels</div>
+
+<div id="fatal"></div>
+
+<script>
+'use strict';
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  COSMOS — the scale of the universe. This is the one parameter.          ║
+// ║  Planet count = COSMOS² × 10       20 → 4,000 · 30 → 9,000 · 40 → 16,000 ║
+// ║  (also settable from the URL:  index.html?cosmos=40&seed=7)              ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+const COSMOS = 30;
+
+// Fine tuning. Lengths, masses and times are in arbitrary simulation units.
+const CFG = {
+  ORBIT_SECONDS: 8,     // seconds (at 1x speed) for one orbit at half the cloud radius; the gravitational constant is derived from this
+  DT: 0.05,             // simulation time per physics step
+  STEPS_PER_SEC: 60,    // physics steps per second at 1x speed
+  SOFTENING: 0.1,       // softens the force in very close encounters
+  DENSITY_K: 0.15,      // radius = K × mass^(1/3)  → larger means more collisions
+  RADIUS: 220,          // radius of the initial cloud (for 9,000 planets; scales with N)
+  FLATTEN: 0.12,        // cloud thickness / radius
+  CONCENTRATION: 0.85,  // 0.5 = uniform disk, 1.0 = concentrated toward the centre
+  SPIN: 1.0,            // disk rotation as a fraction of the circular orbit speed
+  CHAOS: 0.06,          // random velocity component (relative to the circular speed)
+  MASS_SPREAD: 0.9,     // width of the planet mass distribution (log-normal sigma)
+  CORE_MASS: 0.97,      // fraction of all mass that starts in the dense central core (the dough of the star)
+  CORE_COUNT: 0.06,     // fraction of the bodies that start in the core (few, but heavy)
+  CORE_RADIUS: 0.13,    // core radius / cloud radius
+  GAS_DRAG: 0.025,      // nebular gas: pulls planets toward circular orbits, 1/seconds at t=0 (0 = pure gravity)
+  GAS_FADE: 400,        // seconds for the gas to thin out by a factor e
+  CORE_SPIN: 0.12,      // how much the core rotates (low = it collapses quickly)
+  STAR_FRACTION: 0.01,  // a body holding this fraction of the total mass ignites as a star
+  TRAIL_EVERY: 3,       // record a trail sample every this many steps
+  TRAIL_BUDGET: 1.2e6,  // total trail sample budget (trails grow longer as planets die)
+  COMPACT_BELOW: 0.7,   // compact the GPU arrays once the alive ratio falls below this
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+const qs = new URLSearchParams(location.search);
+let cosmosParam = clampInt(qs.get('cosmos') ?? COSMOS, 4, 64);
+let seed = qs.has('seed') ? (parseInt(qs.get('seed')) | 0) : (Math.random() * 2 ** 31) | 0;
+for (const k of Object.keys(CFG)) if (qs.has(k)) CFG[k] = parseFloat(qs.get(k));   // for experiments such as ?SPIN=0.8
+
+function clampInt(v, a, b) { v = parseInt(v); return Math.max(a, Math.min(b, Number.isFinite(v) ? v : a)); }
+const $ = id => document.getElementById(id);
+function fatal(msg) { const f = $('fatal'); f.style.display = 'flex'; f.textContent = msg; console.error(msg); throw new Error(msg); }
+
+const canvas = $('gl');
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, depth: true, powerPreference: 'high-performance' });
+if (!gl) fatal('WebGL2 is not supported. Try a current Chrome / Edge / Firefox.');
+if (!gl.getExtension('EXT_color_buffer_float')) fatal('EXT_color_buffer_float is missing: this GPU/driver cannot render to float textures.');
+
+// ═════════════════════════════ SHADERS ═══════════════════════════════════════
+const GLSL_HEAD = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D; precision highp sampler2DArray;
+`;
+const GLSL_NOISE = `
+float hash31(vec3 p){ p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
+float vnoise(vec3 p){ vec3 i = floor(p), f = fract(p); f = f*f*(3.0 - 2.0*f);
+  return mix(mix(mix(hash31(i), hash31(i+vec3(1,0,0)), f.x), mix(hash31(i+vec3(0,1,0)), hash31(i+vec3(1,1,0)), f.x), f.y),
+             mix(mix(hash31(i+vec3(0,0,1)), hash31(i+vec3(1,0,1)), f.x), mix(hash31(i+vec3(0,1,1)), hash31(i+vec3(1,1,1)), f.x), f.y), f.z); }
+float fbm(vec3 p){ return 0.5*vnoise(p) + 0.3*vnoise(p*2.13) + 0.2*vnoise(p*4.31); }
+`;
+
+// One triangle covering the whole target — in the compute passes every pixel is one planet.
+const VS_FULL = GLSL_HEAD + `
+void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p*2.0 - 1.0, 0.0, 1.0); }`;
+
+// PASS 1 — FORCES: every planet visits every other planet (N²), sums its acceleration,
+//    and marks the largest body touching it as "the one that will swallow me".
+const FS_FORCE = GLSL_HEAD + `
+uniform sampler2D uPos; uniform ivec2 uSize;
+uniform float uG, uEps2, uK, uRmax;
+out vec4 oInfo;                         // xyz = acceleration, w = index of the body that absorbs me (-1 = none) [+0.5: I have something to absorb]
+void main(){
+  ivec2 me = ivec2(gl_FragCoord.xy);
+  vec4 pi = texelFetch(uPos, me, 0);
+  if (pi.w <= 0.0) { oInfo = vec4(0.0, 0.0, 0.0, -1.0); return; }
+  int myIdx = me.y * uSize.x + me.x;
+  float ri = uK * pow(pi.w, 1.0/3.0);
+  float nearR = ri + uRmax, near2 = nearR * nearR;
+  vec3 acc = vec3(0.0);
+  float bestM = -1.0; int best = -1; bool prey = false;
+  for (int y = 0; y < uSize.y; y++) {
+    for (int x = 0; x < uSize.x; x++) {
+      vec4 pj = texelFetch(uPos, ivec2(x, y), 0);
+      vec3 d = pj.xyz - pi.xyz;
+      float d2 = dot(d, d);
+      float inv = inversesqrt(d2 + uEps2);
+      acc += d * (pj.w * inv * inv * inv);          // dead body: mass 0 → adds 0; self: d = 0 → adds 0
+      if (d2 < near2 && pj.w > 0.0) {
+        int j = y * uSize.x + x;
+        if (j != myIdx) {
+          float rr = ri + uK * pow(pj.w, 1.0/3.0);
+          if (d2 < rr * rr) {                        // contact!
+            bool jBigger = (pj.w > pi.w) || (pj.w == pi.w && j < myIdx);
+            if (jBigger) { if (pj.w > bestM) { bestM = pj.w; best = j; } }
+            else prey = true;
+          }
+        }
+      }
+    }
+  }
+  oInfo = vec4(acc * uG, float(best) + (prey ? 0.5 : 0.0));
+}`;
+
+// PASS 2 — MERGE + MOVE: the absorbed body dies (mass 0); the absorber inherits its mass, momentum and colour.
+const FS_INTEGRATE = GLSL_HEAD + `
+uniform sampler2D uPos, uVel, uCol, uInfo; uniform ivec2 uSize;
+uniform float uDt, uFlashDecay, uGas, uG, uGM; uniform vec3 uStarPos;
+layout(location=0) out vec4 oPos;       // xyz, mass
+layout(location=1) out vec4 oVel;       // xyz, collision flash
+layout(location=2) out vec4 oCol;       // rgb, seed
+void main(){
+  ivec2 me = ivec2(gl_FragCoord.xy);
+  vec4 p = texelFetch(uPos, me, 0), v = texelFetch(uVel, me, 0), c = texelFetch(uCol, me, 0);
+  if (p.w <= 0.0) { oPos = vec4(p.xyz, 0.0); oVel = vec4(0.0); oCol = c; return; }
+  vec4 info = texelFetch(uInfo, me, 0);
+  float tf = floor(info.w); int target = int(tf); bool prey = (info.w - tf) > 0.25;
+  if (target >= 0) {
+    float ti = texelFetch(uInfo, ivec2(target % uSize.x, target / uSize.x), 0).w;
+    if (floor(ti) < 0.0) { oPos = vec4(p.xyz, 0.0); oVel = vec4(0.0); oCol = c; return; }   // my absorber survives → I am gone
+  }
+  float m = p.w; vec3 mp = p.xyz * m, mv = v.xyz * m, mc = c.rgb * m, ma = info.xyz * m;
+  float flash = v.w * uFlashDecay;
+  if (prey && target < 0) {
+    int myIdx = me.y * uSize.x + me.x; float eaten = 0.0;
+    for (int y = 0; y < uSize.y; y++) for (int x = 0; x < uSize.x; x++) {
+      ivec2 tc = ivec2(x, y);
+      vec4 ij = texelFetch(uInfo, tc, 0);
+      if (int(floor(ij.w)) == myIdx) {
+        vec4 pj = texelFetch(uPos, tc, 0);
+        if (pj.w > 0.0) {
+          mp += pj.xyz * pj.w; mv += texelFetch(uVel, tc, 0).xyz * pj.w; mc += texelFetch(uCol, tc, 0).rgb * pj.w;
+          ma += ij.xyz * pj.w;           // sum the FORCES too: the mutual pull between merging bodies cancels, momentum is conserved
+          eaten += pj.w;
+        }
+      }
+    }
+    if (eaten > 0.0) flash = max(flash, clamp(0.25 + 2.5 * eaten / m, 0.0, 1.0));
+    m += eaten;
+  }
+  vec3 pos = mp / m, vel = mv / m;
+  vel += (ma / m) * uDt;                 // kick
+  vec3 rel = pos - uStarPos; float rc = length(rel.xz);
+  if (uGas > 0.0 && m * uG < uGM * 0.2 && rc > 2.0) {   // nebular gas on circular orbits around the star drags the planets (never the star) along
+    vec3 vg = vec3(-rel.z, 0.0, rel.x) * (sqrt(uGM / length(rel)) / rc);
+    vel += (vg - vel) * min(uGas * uDt, 1.0);
+  }
+  pos += vel * uDt;                      // drift  (semi-implicit Euler: symplectic, orbits do not leak energy)
+  oPos = vec4(pos, m); oVel = vec4(vel, flash); oCol = vec4(mc / m, c.w);
+}`;
+
+const FS_COPY = GLSL_HEAD + `
+uniform sampler2D uSrc; out vec4 o;
+void main(){ o = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); }`;
+
+// Compaction: drops dead slots and moves the living into a new, smaller texture.
+const FS_REMAP = GLSL_HEAD + `
+uniform sampler2D uSrc; uniform sampler2D uMap; uniform int uSrcW; out vec4 o;
+void main(){ float m = texelFetch(uMap, ivec2(gl_FragCoord.xy), 0).r; if (m < 0.0) { o = vec4(0.0); return; }
+  int i = int(m); o = texelFetch(uSrc, ivec2(i % uSrcW, i / uSrcW), 0); }`;
+const FS_REMAP_ARR = GLSL_HEAD + `
+uniform sampler2DArray uSrc; uniform sampler2D uMap; uniform int uSrcW, uLayer; out vec4 o;
+void main(){ float m = texelFetch(uMap, ivec2(gl_FragCoord.xy), 0).r; if (m < 0.0) { o = vec4(0.0); return; }
+  int i = int(m); o = texelFetch(uSrc, ivec3(i % uSrcW, i / uSrcW, uLayer), 0); }`;
+
+// Background stars
+const FS_SKY = GLSL_HEAD + GLSL_NOISE + `
+uniform vec3 uRight, uUp, uFwd; uniform vec2 uTan, uViewport; out vec4 o;
+void main(){
+  vec2 ndc = gl_FragCoord.xy / uViewport * 2.0 - 1.0;
+  vec3 dir = normalize(uFwd + ndc.x * uTan.x * uRight + ndc.y * uTan.y * uUp);
+  vec3 col = vec3(0.0);
+  for (int l = 0; l < 2; l++) {
+    float sc = (l == 0) ? 150.0 : 270.0;
+    vec3 p = dir * sc, id = floor(p);
+    float h = hash31(id + float(l) * 71.0);
+    if (h > 0.991) {
+      vec3 c = id + 0.5 + (vec3(hash31(id + 1.3), hash31(id + 2.7), hash31(id + 4.1)) - 0.5) * 0.5;
+      float b = smoothstep(0.30, 0.0, length(p - c)) * (0.2 + 0.8 * fract(h * 57.0));
+      col += b * mix(vec3(0.70, 0.80, 1.0), vec3(1.0, 0.85, 0.70), fract(h * 113.0)) * 0.5;
+    }
+  }
+  col += vec3(0.008, 0.010, 0.020) * (1.0 - 0.3 * dot(ndc, ndc));
+  o = vec4(col, 1.0);
+}`;
+
+// Planets: each is a camera-facing quad; the fragment shader turns it into a sphere (or a potato).
+const VS_BODY = GLSL_HEAD + `
+uniform sampler2D uPos, uVel, uCol; uniform ivec2 uSize;
+uniform mat4 uView, uProj; uniform vec2 uViewport;
+uniform float uK, uMinPx, uTotalMass, uStarFrac; uniform vec3 uSunPos; uniform int uHalo;
+out vec2 vUv; flat out vec4 vCol; flat out vec4 vParam; flat out vec3 vLight; flat out vec3 vStar; flat out vec3 vGlow;
+vec3 starColor(float f){                      // by mass fraction: red dwarf → orange → yellow → warm white
+  float x = clamp((log(f) / log(10.0) + 2.0) / 1.7, 0.0, 1.0);
+  vec3 a = vec3(1.0, 0.33, 0.13), b = vec3(1.0, 0.62, 0.28), c = vec3(1.0, 0.86, 0.60), d = vec3(1.0, 0.95, 0.84);
+  return x < 0.33 ? mix(a, b, x / 0.33) : (x < 0.66 ? mix(b, c, (x - 0.33) / 0.33) : mix(c, d, (x - 0.66) / 0.34));
+}
+void main(){
+  int id = gl_InstanceID; ivec2 tc = ivec2(id % uSize.x, id / uSize.x);
+  vec4 p = texelFetch(uPos, tc, 0);
+  vUv = vec2(0.0); vCol = vec4(0.0); vParam = vec4(0.0); vLight = vec3(0.0, 0.0, 1.0); vStar = vec3(0.0); vGlow = vec3(0.0);
+  if (p.w <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  vec4 c = texelFetch(uCol, tc, 0); float flash = texelFetch(uVel, tc, 0).w;
+  vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1)) * 2.0 - 1.0;
+  vec4 vp = uView * vec4(p.xyz, 1.0);
+  float r = uK * pow(p.w, 1.0/3.0);
+  float pxPerUnit = uProj[1][1] * uViewport.y * 0.5 / max(-vp.z, 1e-3);
+  float rPx = r * pxPerUnit;
+  float rDraw = max(rPx, uMinPx) / pxPerUnit;
+  float frac = p.w / uTotalMass;
+  float heat = smoothstep(uStarFrac * 0.6, uStarFrac * 1.5, frac);
+  float lump = 0.34 * (1.0 - smoothstep(0.8, 14.0, p.w));          // small bodies are lumpy; they round out as they grow
+  vec3 star = starColor(frac);
+  float scale = 1.0;
+  if (uHalo == 1) {
+    scale = mix(3.2, 5.5, heat) * (1.0 + 1.6 * flash);
+    vGlow = mix(c.rgb * 0.30, star * 0.7, heat) + flash * vec3(1.0, 0.55, 0.22) * 1.3;
+    vGlow *= clamp(rPx / uMinPx, 0.45, 1.0);
+  }
+  vUv = corner * (uHalo == 1 ? 1.0 : 1.06);
+  vCol = c; vParam = vec4(max(rPx, uMinPx), heat, flash, lump); vStar = star;
+  vec3 sunV = (uView * vec4(uSunPos, 1.0)).xyz - vp.xyz;
+  vLight = length(sunV) > 1e-3 ? normalize(sunV) : vec3(0.0, 0.0, 1.0);
+  vp.xy += corner * rDraw * scale * (uHalo == 1 ? 1.0 : 1.06);
+  gl_Position = uProj * vp;
+}`;
+
+const FS_BODY = GLSL_HEAD + GLSL_NOISE + `
+in vec2 vUv; flat in vec4 vCol; flat in vec4 vParam; flat in vec3 vLight; flat in vec3 vStar; flat in vec3 vGlow;
+uniform float uTime, uSunLit; out vec4 o;
+void main(){
+  float seed = vCol.w, rPx = vParam.x, heat = vParam.y, flash = vParam.z, lump = vParam.w;
+  float ang = atan(vUv.y, vUv.x);
+  float sil = 1.0 - lump * (0.5 + 0.3 * sin(ang * 2.0 + seed * 50.0) + 0.2 * sin(ang * 5.0 + seed * 91.0));
+  float d = length(vUv) / sil;
+  float aa = clamp(1.5 / rPx, 0.02, 0.9);
+  float alpha = 1.0 - smoothstep(1.0 - aa, 1.0, d);
+  if (alpha <= 0.004) discard;
+  float z = sqrt(max(1.0 - min(d * d, 1.0), 0.0));
+  vec3 n = normalize(vec3(vUv / sil, z + 1e-4));
+  vec3 base = vCol.rgb, surf = base; float gran = 0.5;
+  if (rPx > 3.0) {                                           // surface detail when seen up close
+    float tilt = (fract(seed * 5.3) - 0.5) * 1.2, ct = cos(tilt), st = sin(tilt);
+    vec3 q = vec3(ct * n.x - st * n.y, st * n.x + ct * n.y, n.z);
+    float a = uTime * (0.15 + fract(seed * 13.7) * 0.4) + seed * 100.0, ca = cos(a), sa = sin(a);
+    q = vec3(ca * q.x + sa * q.z, q.y, -sa * q.x + ca * q.z);
+    float kind = fract(seed * 7.31), t = fbm(q * 2.4 + seed * 17.0);
+    gran = fbm(q * 7.0 + vec3(0.0, uTime * 0.15, seed * 9.0));
+    if (kind < 0.45)      surf = base * (0.5 + 1.0 * t);                                   // rocky
+    else if (kind < 0.75) { float b = sin(q.y * 9.0 + t * 5.0 + seed * 30.0); surf = base * (0.82 + 0.24 * b) + vec3(0.05, 0.025, 0.0) * b; }   // gas giant
+    else if (kind < 0.90) { float land = smoothstep(0.50, 0.56, t);                          // ocean + land + polar caps
+      surf = mix(base * vec3(0.55, 0.8, 1.15), base.grb * vec3(0.75, 0.9, 0.5) + 0.08, land);
+      surf = mix(surf, vec3(0.95), smoothstep(0.78, 0.92, abs(q.y))); }
+    else                  surf = mix(base, vec3(0.92, 0.97, 1.0), 0.2 + 0.6 * t);           // ice
+  }
+  float head = 0.38 + 0.62 * z;
+  float sun = 0.10 + 1.0 * max(dot(n, vLight), 0.0);
+  vec3 planet = surf * mix(head, sun, uSunLit);
+  vec3 starC = vStar * (0.80 + 0.45 * z) * (0.85 + 0.35 * gran) * 1.35;
+  vec3 c = mix(planet, starC, heat) + flash * vec3(1.0, 0.6, 0.25) * 0.9;
+  o = vec4(c * alpha, alpha);
+}`;
+
+const FS_HALO = GLSL_HEAD + `
+in vec2 vUv; flat in vec4 vCol; flat in vec4 vParam; flat in vec3 vLight; flat in vec3 vStar; flat in vec3 vGlow; out vec4 o;
+void main(){ float d2 = dot(vUv, vUv); float g = max(exp(-d2 * 5.5) - 0.0041, 0.0); o = vec4(vGlow * g, 1.0); }`;
+
+// Orbit trails: for every planet a world-space line strip through its past positions.
+const VS_TRAIL = GLSL_HEAD + `
+uniform sampler2D uPos, uCol; uniform sampler2DArray uTrail; uniform ivec2 uSize;
+uniform int uHead, uLayers, uValid; uniform mat4 uViewProj; uniform float uIntensity, uTotalMass, uStarFrac;
+out vec3 vC;
+void main(){
+  int id = gl_InstanceID; ivec2 tc = ivec2(id % uSize.x, id / uSize.x);
+  vec4 p = texelFetch(uPos, tc, 0); vC = vec3(0.0);
+  if (p.w <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  int age = (gl_VertexID >> 1) + (gl_VertexID & 1);
+  vec3 wp = p.xyz;
+  if (age > 0) { int a = min(age, uValid); wp = texelFetch(uTrail, ivec3(tc, (uHead - (a - 1) + uLayers * 2) % uLayers), 0).xyz; }
+  float f = 1.0 - float(age) / float(uValid + 1);
+  float heat = smoothstep(uStarFrac * 0.6, uStarFrac * 1.5, p.w / uTotalMass);
+  vC = mix(texelFetch(uCol, tc, 0).rgb, vec3(1.0, 0.85, 0.6), heat) * (f * f * f) * uIntensity;
+  gl_Position = uViewProj * vec4(wp, 1.0);
+}`;
+const FS_TRAIL = GLSL_HEAD + `in vec3 vC; out vec4 o; void main(){ o = vec4(vC, 1.0); }`;
+
+// ═════════════════════════════ WebGL helpers ═════════════════════════════════
+function compile(type, src, name) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) fatal(`Shader failed to compile (${name}):\n` + gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs, fs, name) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs, name + '.vs')); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs, name + '.fs'));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) fatal(`Program failed to link (${name}):\n` + gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(p, i).name; u[nm] = gl.getUniformLocation(p, nm); }
+  return { p, u };
+}
+const P = {
+  force: program(VS_FULL, FS_FORCE, 'force'), integrate: program(VS_FULL, FS_INTEGRATE, 'integrate'),
+  copy: program(VS_FULL, FS_COPY, 'copy'), remap: program(VS_FULL, FS_REMAP, 'remap'), remapArr: program(VS_FULL, FS_REMAP_ARR, 'remapArr'),
+  sky: program(VS_FULL, FS_SKY, 'sky'), body: program(VS_BODY, FS_BODY, 'body'), halo: program(VS_BODY, FS_HALO, 'halo'),
+  trail: program(VS_TRAIL, FS_TRAIL, 'trail'),
+};
+gl.bindVertexArray(gl.createVertexArray());          // no attributes: everything is driven by gl_VertexID / gl_InstanceID
+
+function tex2D(w, h, data = null, fmt = gl.RGBA32F) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, fmt, w, h);
+  if (data) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, fmt === gl.R32F ? gl.RED : gl.RGBA, gl.FLOAT, data);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+    gl.texParameteri(gl.TEXTURE_2D, k, v);
+  return t;
+}
+function fbo(...texs) {
+  const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  texs.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0));
+  gl.drawBuffers(texs.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) fatal('Framebuffer incomplete (float render targets may be unsupported).');
+  return f;
+}
+function bind(unit, t, target = gl.TEXTURE_2D) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(target, t); }
+const tri = () => gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+// ═════════════════════════════ State (lives on GPU) ══════════════════════════
+let S = null;            // { n, tw, th, pos[2], vel[2], col[2], fbo[2], info, infoFbo, cur }
+let T = null;            // trails: { tex, fbo, layers, head, valid }
+let U = null;            // universe info: { n0, G, totalMass, rmax, radius, seed }
+let generation = 0, stepCount = 0;
+
+function allocState(n, pos, vel, col) {
+  const tw = Math.ceil(Math.sqrt(n)), th = Math.ceil(n / tw), s = { n, tw, th, pos: [], vel: [], col: [], fbo: [], cur: 0 };
+  for (let k = 0; k < 2; k++) {
+    s.pos[k] = tex2D(tw, th, k === 0 ? pos : null); s.vel[k] = tex2D(tw, th, k === 0 ? vel : null); s.col[k] = tex2D(tw, th, k === 0 ? col : null);
+    s.fbo[k] = fbo(s.pos[k], s.vel[k], s.col[k]);
+  }
+  s.info = tex2D(tw, th); s.infoFbo = fbo(s.info);
+  return s;
+}
+function freeState(s) {
+  if (!s) return;
+  [...s.pos, ...s.vel, ...s.col, s.info].forEach(t => gl.deleteTexture(t)); [...s.fbo, s.infoFbo].forEach(f => gl.deleteFramebuffer(f));
+}
+function allocTrails(s) {
+  const layers = Math.max(32, Math.min(512, 2 ** Math.floor(Math.log2(CFG.TRAIL_BUDGET / (s.tw * s.th)))));
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+  gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA32F, s.tw, s.th, layers);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  return { tex, fbo: gl.createFramebuffer(), layers, head: 0, valid: 0 };
+}
+function freeTrails(t) { if (t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); } }
+
+// ───────────── Create the universe: random masses, random positions, a rotating irregular cloud ─────────────
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const PALETTE = [[.62, .52, .42], [.78, .40, .26], [.86, .71, .50], [.46, .61, .86], [.26, .52, .86], [.76, .90, .95],
+                 [.86, .32, .16], [.42, .72, .47], [.66, .46, .82], [.90, .82, .55], [.55, .58, .62], [.35, .78, .74]];
+
+function createUniverse(cosmos, sd) {
+  const n = cosmos * cosmos * 10, rnd = mulberry32(sd);
+  const gauss = () => Math.sqrt(-2 * Math.log(1 - rnd())) * Math.cos(2 * Math.PI * rnd());
+  const R = CFG.RADIUS * Math.cbrt(n / 9000);
+  const tw = Math.ceil(Math.sqrt(n)), th = Math.ceil(n / tw), len = tw * th * 4;
+  const pos = new Float32Array(len), vel = new Float32Array(len), col = new Float32Array(len);
+  // Masses first: disk planets are light, core bodies are heavy (scaled so the core holds CORE_MASS of the total)
+  const nCore = Math.round(n * CFG.CORE_COUNT), isCore = i => i < nCore, Rc = R * CFG.CORE_RADIUS;
+  const mass = new Float32Array(n); let mDisk = 0, mCore = 0;
+  for (let i = 0; i < n; i++) { mass[i] = Math.min(25, Math.max(0.1, Math.exp(gauss() * CFG.MASS_SPREAD))); if (isCore(i)) mCore += mass[i]; else mDisk += mass[i]; }
+  const coreScale = nCore ? (mDisk * CFG.CORE_MASS / (1 - CFG.CORE_MASS)) / mCore : 1;
+  let M = 0;
+  for (let i = 0; i < n; i++) {
+    const core = isCore(i), m = mass[i] * (core ? coreScale : 1), a = rnd() * 2 * Math.PI;
+    const r = core ? Rc * Math.cbrt(rnd()) : Rc * 1.25 + (R - Rc * 1.25) * Math.pow(rnd(), CFG.CONCENTRATION);
+    const y = core ? gauss() * Rc * 0.3 : gauss() * R * CFG.FLATTEN * 0.5 * (0.35 + 0.65 * r / R);
+    pos[i * 4] = r * Math.cos(a); pos[i * 4 + 1] = y; pos[i * 4 + 2] = r * Math.sin(a); pos[i * 4 + 3] = m; M += m;
+    const c = PALETTE[(rnd() * PALETTE.length) | 0], j = 0.75 + rnd() * 0.5;
+    col[i * 4] = Math.min(1, c[0] * j + (rnd() - .5) * .1); col[i * 4 + 1] = Math.min(1, c[1] * j + (rnd() - .5) * .1); col[i * 4 + 2] = Math.min(1, c[2] * j + (rnd() - .5) * .1);
+    col[i * 4 + 3] = rnd();
+  }
+  const period = CFG.ORBIT_SECONDS * CFG.STEPS_PER_SEC * CFG.DT, G = 4 * Math.PI ** 2 * (R / 2) ** 3 / (M * period * period);
+  // Every body gets the circular speed for the mass enclosed by its orbit × SPIN, plus a random CHAOS component
+  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => Math.hypot(pos[a * 4], pos[a * 4 + 1], pos[a * 4 + 2]) - Math.hypot(pos[b * 4], pos[b * 4 + 1], pos[b * 4 + 2]));
+  let enc = 0;
+  for (const i of order) {
+    const x = pos[i * 4], y = pos[i * 4 + 1], z = pos[i * 4 + 2], m = pos[i * 4 + 3];
+    enc += m;
+    const rs = Math.hypot(x, y, z), rc = Math.hypot(x, z) || 1e-6, vc = Math.sqrt(G * enc / Math.max(rs, 1));
+    const spin = isCore(i) ? CFG.CORE_SPIN : CFG.SPIN, ch = (isCore(i) ? Math.max(CFG.CHAOS, 0.3) : CFG.CHAOS) * vc;
+    vel[i * 4] = -z / rc * vc * spin + gauss() * ch;
+    vel[i * 4 + 1] = gauss() * ch * 0.6;
+    vel[i * 4 + 2] = x / rc * vc * spin + gauss() * ch;
+  }
+  // Zero the centre of mass and the total momentum so the universe does not drift off screen
+  const cm = [0, 0, 0, 0, 0, 0];
+  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { cm[k] += pos[i * 4 + k] * pos[i * 4 + 3]; cm[k + 3] += vel[i * 4 + k] * pos[i * 4 + 3]; }
+  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { pos[i * 4 + k] -= cm[k] / M; vel[i * 4 + k] -= cm[k + 3] / M; }
+
+  freeState(S); freeTrails(T);
+  S = allocState(n, pos, vel, col); T = allocTrails(S);
+  U = { n0: n, G, totalMass: M, rmax: CFG.DENSITY_K * Math.cbrt(M) * 1.02, radius: R, seed: sd };
+  generation++; stepCount = 0; pendingRead = null;
+  stats = { alive: n, maxMass: 0, maxIdx: -1, sun: [0, 0, 0], stars: 0 }; aliveHist = [n]; histClock = 0; rate = 0; lastAliveForRate = n;
+  sunPos = [0, 0, 0]; cam.target = [0, 0, 0]; cam.dist = R * 2.9;
+}
+
+// ═════════════════════════════ Physics step ═══════════════════════════════════
+function step() {
+  const s = S, a = s.cur, b = 1 - a;
+  gl.viewport(0, 0, s.tw, s.th); gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST);
+  let pr = P.force; gl.useProgram(pr.p); gl.bindFramebuffer(gl.FRAMEBUFFER, s.infoFbo);
+  bind(0, s.pos[a]); gl.uniform1i(pr.u.uPos, 0); gl.uniform2i(pr.u.uSize, s.tw, s.th);
+  gl.uniform1f(pr.u.uG, U.G); gl.uniform1f(pr.u.uEps2, CFG.SOFTENING ** 2); gl.uniform1f(pr.u.uK, CFG.DENSITY_K); gl.uniform1f(pr.u.uRmax, U.rmax);
+  tri();
+  pr = P.integrate; gl.useProgram(pr.p); gl.bindFramebuffer(gl.FRAMEBUFFER, s.fbo[b]);
+  bind(0, s.pos[a]); bind(1, s.vel[a]); bind(2, s.col[a]); bind(3, s.info);
+  gl.uniform1i(pr.u.uPos, 0); gl.uniform1i(pr.u.uVel, 1); gl.uniform1i(pr.u.uCol, 2); gl.uniform1i(pr.u.uInfo, 3);
+  gl.uniform2i(pr.u.uSize, s.tw, s.th); gl.uniform1f(pr.u.uDt, CFG.DT); gl.uniform1f(pr.u.uFlashDecay, 0.955);
+  const tSec = stepCount / CFG.STEPS_PER_SEC, hasStar = stats.maxMass > U.totalMass * 0.5;      // gas only matters once the star exists
+  gl.uniform1f(pr.u.uGas, hasStar ? CFG.GAS_DRAG / (CFG.STEPS_PER_SEC * CFG.DT) * Math.exp(-tSec / CFG.GAS_FADE) : 0);
+  gl.uniform1f(pr.u.uG, U.G); gl.uniform1f(pr.u.uGM, U.G * stats.maxMass); gl.uniform3fv(pr.u.uStarPos, stats.sun);
+  tri();
+  s.cur = b; stepCount++;
+  if (ui.trails && stepCount % CFG.TRAIL_EVERY === 0) sampleTrail();
+}
+function sampleTrail() {
+  T.head = (T.head + 1) % T.layers; T.valid = Math.min(T.valid + 1, T.layers);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, T.fbo); gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, T.tex, 0, T.head);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+  gl.useProgram(P.copy.p); bind(0, S.pos[S.cur]); gl.uniform1i(P.copy.u.uSrc, 0); tri();
+}
+
+// ═════════════════════════════ GPU → CPU: statistics (async, no stalls) ══════
+let pendingRead = null, pbo = gl.createBuffer(), pboSize = 0;
+let stats = null, aliveHist = [], histClock = 0, rate = 0, lastAliveForRate = 0, sunPos = [0, 0, 0];
+
+function requestStats() {
+  if (pendingRead) return;
+  const bytes = S.tw * S.th * 16;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, S.fbo[S.cur]); gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
+  if (pboSize !== bytes) { gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ); pboSize = bytes; }
+  gl.readPixels(0, 0, S.tw, S.th, gl.RGBA, gl.FLOAT, 0);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  pendingRead = { sync: gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0), gen: generation, len: S.tw * S.th * 4 };
+  gl.flush();
+}
+function pollStats() {
+  if (!pendingRead) return;
+  const r = gl.clientWaitSync(pendingRead.sync, 0, 0);
+  if (r === gl.TIMEOUT_EXPIRED) return;
+  const pr = pendingRead; pendingRead = null; gl.deleteSync(pr.sync);
+  if (r === gl.WAIT_FAILED || pr.gen !== generation) return;
+  const arr = new Float32Array(pr.len);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo); gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, arr); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  processStats(arr);
+}
+function processStats(arr) {
+  let alive = 0, maxMass = 0, maxIdx = -1, stars = 0; const starM = U.totalMass * CFG.STAR_FRACTION;
+  for (let i = 0, n = arr.length / 4; i < n; i++) {
+    const m = arr[i * 4 + 3]; if (m <= 0) continue;
+    alive++; if (m >= starM) stars++; if (m > maxMass) { maxMass = m; maxIdx = i; }
+  }
+  stats = { alive, maxMass, maxIdx, stars, sun: maxIdx >= 0 ? [arr[maxIdx * 4], arr[maxIdx * 4 + 1], arr[maxIdx * 4 + 2]] : [0, 0, 0] };
+  if (alive < S.tw * S.th * CFG.COMPACT_BELOW && S.n > 256) compact(arr, alive);
+}
+
+// Remove the dead: as N shrinks the N² work gets cheap fast. The CPU builds the remap table, the GPU moves the data.
+function compact(arr, alive) {
+  const old = S, oldT = T, n = alive, tw = Math.ceil(Math.sqrt(n)), th = Math.ceil(n / tw);
+  const map = new Float32Array(tw * th).fill(-1);
+  for (let i = 0, k = 0, tot = arr.length / 4; i < tot; i++) if (arr[i * 4 + 3] > 0) map[k++] = i;
+  const mapTex = tex2D(tw, th, map, gl.R32F);
+  const ns = allocState(n, null, null, null);
+  gl.viewport(0, 0, tw, th); gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(P.remap.p); gl.uniform1i(P.remap.u.uSrc, 0); gl.uniform1i(P.remap.u.uMap, 1); gl.uniform1i(P.remap.u.uSrcW, old.tw);
+  bind(1, mapTex);
+  const one = gl.createFramebuffer();
+  for (const key of ['pos', 'vel', 'col']) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, one); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ns[key][0], 0);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]); bind(0, old[key][old.cur]); tri();
+  }
+  const nt = allocTrails(ns), keep = Math.min(oldT.valid, nt.layers);
+  gl.useProgram(P.remapArr.p); gl.uniform1i(P.remapArr.u.uSrc, 0); gl.uniform1i(P.remapArr.u.uMap, 1); gl.uniform1i(P.remapArr.u.uSrcW, old.tw);
+  bind(0, oldT.tex, gl.TEXTURE_2D_ARRAY); bind(1, mapTex);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, nt.fbo);
+  for (let a = 1; a <= keep; a++) {                     // age a: read from the old ring, write to slot (layers − a) of the new ring
+    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, nt.tex, 0, nt.layers - a);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    gl.uniform1i(P.remapArr.u.uLayer, (oldT.head - (a - 1) + oldT.layers * 2) % oldT.layers); tri();
+  }
+  nt.head = nt.layers - 1; nt.valid = keep;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(one); gl.deleteTexture(mapTex);
+  bind(0, null, gl.TEXTURE_2D_ARRAY);
+  freeState(old); freeTrails(oldT); S = ns; T = nt; generation++;
+  if (stats.maxIdx >= 0) stats.maxIdx = map.indexOf(stats.maxIdx);
+}
+
+// ═════════════════════════════ Camera ════════════════════════════════════════
+const cam = { yaw: 0.6, pitch: 0.62, dist: 640, target: [0, 0, 0], fov: 50 * Math.PI / 180 };
+function perspective(fovy, asp, n, f) { const t = 1 / Math.tan(fovy / 2); return new Float32Array([t / asp, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) / (n - f), -1, 0, 0, 2 * f * n / (n - f), 0]); }
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = a => { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+function mul(a, b) { const o = new Float32Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; }
+function camera(aspect) {
+  const cp = Math.cos(cam.pitch), eye = [cam.target[0] + cam.dist * cp * Math.sin(cam.yaw), cam.target[1] + cam.dist * Math.sin(cam.pitch), cam.target[2] + cam.dist * cp * Math.cos(cam.yaw)];
+  const f = norm(sub(cam.target, eye)), r = norm(cross(f, [0, 1, 0])), u = cross(r, f);
+  const view = new Float32Array([r[0], u[0], -f[0], 0, r[1], u[1], -f[1], 0, r[2], u[2], -f[2], 0, -dot(r, eye), -dot(u, eye), dot(f, eye), 1]);
+  const proj = perspective(cam.fov, aspect, Math.max(0.5, cam.dist * 0.002), cam.dist * 40 + 5000);
+  return { view, proj, vp: mul(proj, view), r, u, f };
+}
+
+// ═════════════════════════════ Render ═════════════════════════════════════════
+function render(time) {
+  const w = canvas.width, h = canvas.height, c = camera(w / h), s = S, a = s.cur, dpr = window.devicePixelRatio || 1;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, w, h);
+  gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+
+  let pr = P.sky; gl.useProgram(pr.p);
+  gl.uniform3fv(pr.u.uRight, c.r); gl.uniform3fv(pr.u.uUp, c.u); gl.uniform3fv(pr.u.uFwd, c.f);
+  const th = Math.tan(cam.fov / 2); gl.uniform2f(pr.u.uTan, th * w / h, th); gl.uniform2f(pr.u.uViewport, w, h); tri();
+
+  const inst = s.tw * s.th, sunFrac = stats.maxMass / U.totalMass;
+  const sunLit = Math.min(1, Math.max(0, (sunFrac - CFG.STAR_FRACTION * 0.6) / (CFG.STAR_FRACTION * 0.9)));
+  gl.enable(gl.BLEND);
+  if (ui.trails && T.valid > 0) {
+    pr = P.trail; gl.useProgram(pr.p); gl.blendFunc(gl.ONE, gl.ONE);
+    bind(0, s.pos[a]); bind(1, s.col[a]); bind(2, T.tex, gl.TEXTURE_2D_ARRAY);
+    gl.uniform1i(pr.u.uPos, 0); gl.uniform1i(pr.u.uCol, 1); gl.uniform1i(pr.u.uTrail, 2); gl.uniform2i(pr.u.uSize, s.tw, s.th);
+    gl.uniform1i(pr.u.uHead, T.head); gl.uniform1i(pr.u.uLayers, T.layers); gl.uniform1i(pr.u.uValid, T.valid);
+    gl.uniformMatrix4fv(pr.u.uViewProj, false, c.vp);
+    gl.uniform1f(pr.u.uIntensity, Math.max(0.035, Math.min(0.45, 170 / Math.max(stats.alive, 1))));    // fewer planets → brighter trails, never blown out
+    gl.uniform1f(pr.u.uTotalMass, U.totalMass); gl.uniform1f(pr.u.uStarFrac, CFG.STAR_FRACTION);
+    gl.drawArraysInstanced(gl.LINES, 0, T.valid * 2, inst);
+  }
+  for (const halo of [0, 1]) {
+    pr = halo ? P.halo : P.body; gl.useProgram(pr.p);
+    if (halo) { gl.disable(gl.DEPTH_TEST); gl.blendFunc(gl.ONE, gl.ONE); }
+    else { gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); }
+    bind(0, s.pos[a]); bind(1, s.vel[a]); bind(2, s.col[a]);
+    gl.uniform1i(pr.u.uPos, 0); gl.uniform1i(pr.u.uVel, 1); gl.uniform1i(pr.u.uCol, 2); gl.uniform2i(pr.u.uSize, s.tw, s.th);
+    gl.uniformMatrix4fv(pr.u.uView, false, c.view); gl.uniformMatrix4fv(pr.u.uProj, false, c.proj); gl.uniform2f(pr.u.uViewport, w, h);
+    gl.uniform1f(pr.u.uK, CFG.DENSITY_K); gl.uniform1f(pr.u.uMinPx, 1.3 * dpr); gl.uniform1f(pr.u.uTotalMass, U.totalMass);
+    gl.uniform1f(pr.u.uStarFrac, CFG.STAR_FRACTION); gl.uniform3fv(pr.u.uSunPos, sunPos); gl.uniform1i(pr.u.uHalo, halo);
+    if (!halo) { gl.uniform1f(pr.u.uTime, time); gl.uniform1f(pr.u.uSunLit, sunLit); }
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, inst);
+  }
+  gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST);
+}
+
+// ═════════════════════════════ UI ════════════════════════════════════════════
+const ui = { paused: false, speed: 1, trails: true, follow: true, orbit: true };
+const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
+const fmt = n => Math.round(n).toLocaleString('en-US');
+function syncButtons() {
+  $('bPause').textContent = ui.paused ? 'Resume' : 'Pause'; $('bPause').classList.toggle('on', ui.paused);
+  $('bSpeed').textContent = `Speed ${ui.speed}×`; $('bTrails').classList.toggle('on', ui.trails);
+  $('bFollow').classList.toggle('on', ui.follow); $('bOrbit').classList.toggle('on', ui.orbit);
+}
+function newUniverse(newSeed = true) {
+  cosmosParam = clampInt($('inCosmos').value, 4, 64); $('inCosmos').value = cosmosParam;
+  if (newSeed) seed = (Math.random() * 2 ** 31) | 0;
+  createUniverse(cosmosParam, seed);
+}
+const actions = {
+  pause() { ui.paused = !ui.paused; }, fresh() { newUniverse(true); },
+  trails() { ui.trails = !ui.trails; if (ui.trails) T.valid = 0; }, follow() { ui.follow = !ui.follow; if (!ui.follow) cam.target = [0, 0, 0]; },
+  orbit() { ui.orbit = !ui.orbit; }, faster() { ui.speed = SPEEDS[Math.min(SPEEDS.length - 1, SPEEDS.indexOf(ui.speed) + 1)]; },
+  slower() { ui.speed = SPEEDS[Math.max(0, SPEEDS.indexOf(ui.speed) - 1)]; },
+  cycle() { ui.speed = SPEEDS[(SPEEDS.indexOf(ui.speed) + 1) % SPEEDS.length]; },
+  hud() { for (const id of ['hud', 'bar', 'help']) $(id).classList.toggle('hidden'); },
+};
+const run = name => { actions[name](); syncButtons(); };
+$('bPause').onclick = () => run('pause'); $('bNew').onclick = () => run('fresh'); $('bSpeed').onclick = () => run('cycle');
+$('bTrails').onclick = () => run('trails'); $('bFollow').onclick = () => run('follow'); $('bOrbit').onclick = () => run('orbit');
+$('inCosmos').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { run('fresh'); e.target.blur(); } });
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  const name = k === ' ' ? 'pause' : k === 'n' ? 'fresh' : k === 't' ? 'trails' : k === 'f' ? 'follow' : k === 'o' ? 'orbit'
+    : (k === '+' || k === '=') ? 'faster' : (k === '-' || k === '_') ? 'slower' : k === 'h' ? 'hud' : null;
+  if (name) { e.preventDefault(); run(name); }
+});
+let dragging = false, lastX = 0, lastY = 0;
+canvas.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId); canvas.classList.add('drag'); });
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  cam.yaw -= (e.clientX - lastX) * 0.005; cam.pitch = Math.max(-1.55, Math.min(1.55, cam.pitch + (e.clientY - lastY) * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+});
+const endDrag = () => { dragging = false; canvas.classList.remove('drag'); };
+canvas.addEventListener('pointerup', endDrag); canvas.addEventListener('pointercancel', endDrag);
+canvas.addEventListener('wheel', e => { e.preventDefault(); cam.dist = Math.max(3, Math.min(20000, cam.dist * Math.exp(e.deltaY * 0.0012))); }, { passive: false });
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1, w = Math.max(1, Math.round(canvas.clientWidth * dpr)), h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+
+function drawSpark() {
+  const cv = $('spark'), g = cv.getContext('2d'), w = cv.width, h = cv.height; g.clearRect(0, 0, w, h);
+  if (aliveHist.length < 2) return;
+  g.beginPath();
+  aliveHist.forEach((v, i) => { const x = i / (aliveHist.length - 1) * (w - 2) + 1, y = h - 2 - (v / U.n0) * (h - 4); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+  g.strokeStyle = '#8fb4ff'; g.lineWidth = 1.5; g.stroke();
+  g.lineTo(w - 1, h - 1); g.lineTo(1, h - 1); g.closePath(); g.fillStyle = 'rgba(120,160,255,.13)'; g.fill();
+}
+function updateHud(fps) {
+  const hits = U.n0 - stats.alive, secs = stepCount / CFG.STEPS_PER_SEC;
+  $('sAlive').textContent = `${fmt(stats.alive)} / ${fmt(U.n0)}`; $('sHits').textContent = fmt(hits); $('sStars').textContent = stats.stars;
+  $('sBig').textContent = stats.maxMass ? `${fmt(stats.maxMass)}  (${(100 * stats.maxMass / U.totalMass).toFixed(1)}%)` : '–';
+  $('sTime').textContent = `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
+  const perMin = rate * 60 / U.n0;                       // collisions per minute, relative to the initial population
+  $('phase').textContent = hits < U.n0 * 0.01 ? 'Chaos' : perMin > 0.06 ? 'Age of collisions' : perMin > 0.008 ? 'Orbits settling' : 'Equilibrium';
+  $('sFps').textContent = `${fps.toFixed(0)} fps · ${fmt(S.tw * S.th)} slots · seed ${U.seed}`;
+  drawSpark();
+}
+
+// ═════════════════════════════ Main loop ═════════════════════════════════════
+let last = performance.now(), stepAcc = 0, frame = 0, fpsEma = 60, hudClock = 1, rateClock = 0;
+function tick(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now; frame++;
+  fpsEma += (1 / Math.max(dt, 1e-3) - fpsEma) * 0.05;
+  resize(); pollStats();
+  if (!ui.paused) {
+    stepAcc += dt * CFG.STEPS_PER_SEC * ui.speed;
+    let n = Math.floor(stepAcc); stepAcc -= n; if (n > 12) { n = 12; stepAcc = 0; }
+    for (let i = 0; i < n; i++) step();
+    if (ui.orbit && !dragging) cam.yaw += dt * 0.025;
+    histClock += dt * ui.speed; rateClock += dt * ui.speed;
+    if (histClock > 1) { histClock = 0; aliveHist.push(stats.alive); if (aliveHist.length > 600) aliveHist = aliveHist.filter((_, i) => i % 2 === 0); }
+    if (rateClock > 2) { rate += ((lastAliveForRate - stats.alive) / rateClock - rate) * 0.35; lastAliveForRate = stats.alive; rateClock = 0; }
+  }
+  if (frame % 5 === 0) requestStats();
+  for (let k = 0; k < 3; k++) sunPos[k] += (stats.sun[k] - sunPos[k]) * 0.2;
+  if (ui.follow) for (let k = 0; k < 3; k++) cam.target[k] += (sunPos[k] - cam.target[k]) * 0.1;
+  render(now / 1000);
+  if ((hudClock += dt) > 0.25) { hudClock = 0; updateHud(fpsEma); }
+  requestAnimationFrame(tick);
+}
+
+// ═════════════════════════════ Start ═════════════════════════════════════════
+{
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const name = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+  const m = name.match(/ANGLE \([^,]*,\s*([^,(]+)/); $('sGpu').textContent = (m ? m[1] : name).replace(/\s*(Direct3D|OpenGL).*/, '').trim().slice(0, 28);
+}
+$('inCosmos').value = cosmosParam;
+createUniverse(cosmosParam, seed); syncButtons(); resize();
+requestAnimationFrame(tick);
+
+// For poking around from the console:  cosmos.advance(1000); cosmos.measure()
+window.cosmos = {
+  CFG, ui, cam, get state() { return { S, T, U, stats, stepCount }; },
+  restart(c = cosmosParam, sd = seed) { $('inCosmos').value = c; cosmosParam = c; seed = sd; createUniverse(c, sd); },
+  advance(n = 100) { for (let i = 0; i < n; i++) step(); gl.finish(); return stepCount; },
+  measure() {                                           // synchronous readback + orbit analysis (relative to the largest body)
+    const len = S.tw * S.th * 4, p = new Float32Array(len), v = new Float32Array(len);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, S.fbo[S.cur]);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0); gl.readPixels(0, 0, S.tw, S.th, gl.RGBA, gl.FLOAT, p);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1); gl.readPixels(0, 0, S.tw, S.th, gl.RGBA, gl.FLOAT, v);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    processStats(p.slice());
+    const ids = []; for (let i = 0; i < len / 4; i++) if (p[i * 4 + 3] > 0) ids.push(i);
+    ids.sort((a, b) => p[b * 4 + 3] - p[a * 4 + 3]);
+    const s = ids[0], Ms = p[s * 4 + 3], ecc = [], sma = [], inc = []; let bound = 0, totalM = 0;
+    for (const i of ids) totalM += p[i * 4 + 3];
+    for (const i of ids.slice(1)) {
+      const r = [0, 1, 2].map(k => p[i * 4 + k] - p[s * 4 + k]), w = [0, 1, 2].map(k => v[i * 4 + k] - v[s * 4 + k]);
+      const mu = U.G * (Ms + p[i * 4 + 3]), rl = Math.hypot(...r), e = dot(w, w) / 2 - mu / rl, hv = cross(r, w), h2 = dot(hv, hv);
+      if (e < 0) { bound++; ecc.push(Math.sqrt(Math.max(0, 1 + 2 * e * h2 / (mu * mu)))); sma.push(-mu / (2 * e)); inc.push(Math.acos(Math.abs(hv[1]) / Math.sqrt(h2)) * 180 / Math.PI); }
+    }
+    const med = a => a.length ? a.slice().sort((x, y) => x - y)[a.length >> 1] : null;
+    return { step: stepCount, simSec: +(stepCount / CFG.STEPS_PER_SEC).toFixed(1), alive: ids.length, slots: S.tw * S.th, trailLayers: T.layers,
+      totalMass: +totalM.toFixed(1), top5: ids.slice(0, 5).map(i => +p[i * 4 + 3].toFixed(1)), topFrac: +(Ms / totalM).toFixed(3),
+      bound, medEcc: med(ecc), medSma: med(sma), medIncDeg: med(inc), lowEcc: ecc.filter(e => e < 0.3).length };
+  },
+};
+</script>
+</body>
+</html>
