@@ -3,7 +3,46 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cosmos</title>
+<title>Cosmos — GPU N-Body Gravity Simulation in WebGL2</title>
+<meta name="description" content="Watch thousands of random planets collide, merge and settle into a stable solar system. A real-time GPU N-body gravity simulation in a single HTML file.">
+<meta name="keywords" content="n-body simulation, gravity simulation, WebGL2, GPGPU, GPU physics, solar system formation, planet formation, accretion, orbital mechanics, GLSL, JavaScript, browser simulation">
+<meta name="author" content="A. Burak Soyak">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#05060b">
+<link rel="canonical" href="https://absoyak.github.io/cosmos-demo/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2305060b'/%3E%3Cellipse cx='32' cy='32' rx='25' ry='10' fill='none' stroke='%238fb4ff' stroke-width='2.5' transform='rotate(-25 32 32)'/%3E%3Ccircle cx='32' cy='32' r='9' fill='%23ffd38a'/%3E%3Ccircle cx='53' cy='21' r='3.5' fill='%238fb4ff'/%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Cosmos">
+<meta property="og:title" content="Cosmos — a universe in one HTML file">
+<meta property="og:description" content="Thousands of random planets under real Newtonian gravity collide, merge and settle into a stable solar system — simulated live on your GPU with WebGL2.">
+<meta property="og:url" content="https://absoyak.github.io/cosmos-demo/">
+<meta property="og:image" content="https://absoyak.github.io/cosmos-demo/assets/og-image.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A glowing star surrounded by a disk of thousands of planets leaving colourful orbit trails">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Cosmos — a universe in one HTML file">
+<meta name="twitter:description" content="Thousands of random planets collide, merge and settle into a solar system. Real-time GPU N-body gravity in WebGL2.">
+<meta name="twitter:image" content="https://absoyak.github.io/cosmos-demo/assets/og-image.jpg">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "Cosmos",
+  "alternateName": "Cosmos — GPU N-Body Gravity Simulation",
+  "url": "https://absoyak.github.io/cosmos-demo/",
+  "image": "https://absoyak.github.io/cosmos-demo/assets/og-image.jpg",
+  "description": "A real-time N-body gravity simulation that runs entirely on the GPU with WebGL2. Thousands of randomly generated planets attract each other, collide, merge and settle into a stable solar system around a star born from the collisions.",
+  "applicationCategory": "EducationalApplication",
+  "applicationSubCategory": "Physics simulation",
+  "operatingSystem": "Any (browser with WebGL2)",
+  "browserRequirements": "Requires WebGL2 and EXT_color_buffer_float",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Person", "name": "A. Burak Soyak", "url": "https://github.com/absoyak" },
+  "sameAs": "https://github.com/absoyak/cosmos-demo"
+}
+</script>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; color: #cfd8ea;
     font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; }
@@ -20,10 +59,10 @@
   #phase { color: #ffd38a !important; }
   #spark { display: block; width: 100%; height: 38px; margin-top: 8px; }
   #foot { margin-top: 6px; color: #5d6a88; font-size: 11px; display: flex; justify-content: space-between; gap: 10px; }
-  #bar { top: 14px; right: 14px; padding: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; max-width: 60vw; justify-content: flex-end; }
-  button, input { font: inherit; color: #dfe6fa; background: rgba(120, 150, 255, .10); border: 1px solid rgba(140, 170, 255, .22);
-    border-radius: 7px; padding: 5px 10px; cursor: pointer; }
-  button:hover { background: rgba(120, 150, 255, .22); }
+  #bar { top: 14px; right: 14px; padding: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; max-width: calc(100vw - 300px); justify-content: flex-end; }
+  button, input, a.btn { font: inherit; color: #dfe6fa; background: rgba(120, 150, 255, .10); border: 1px solid rgba(140, 170, 255, .22);
+    border-radius: 7px; padding: 5px 10px; cursor: pointer; text-decoration: none; }
+  button:hover, a.btn:hover { background: rgba(120, 150, 255, .22); }
   button.on { background: rgba(120, 170, 255, .30); border-color: rgba(160, 190, 255, .55); }
   input { width: 44px; cursor: text; text-align: center; }
   label { color: #7f8cab; }
@@ -36,7 +75,19 @@
 </style>
 </head>
 <body>
-<canvas id="gl"></canvas>
+<canvas id="gl" aria-label="Real-time simulation of thousands of planets orbiting, colliding and merging around a newborn star">
+  <!-- Fallback content: shown when the canvas cannot render, and read by screen readers and search engines. -->
+  <h2>Cosmos: a GPU N-body gravity simulation in your browser</h2>
+  <p>Cosmos creates thousands of random planets and lets real Newtonian gravity do the rest. Every planet attracts every
+    other planet; planets that touch merge, conserving mass and momentum. A dense core collapses into a star within
+    seconds, most of the planets collide during the first minutes, and the survivors settle into a flat, stable solar
+    system on nearly circular orbits.</p>
+  <p>All physics runs on the GPU: the N² force pass, collision detection, merging and integration are WebGL2 fragment
+    shaders working on float textures. It is a single HTML file with no dependencies.</p>
+  <p><a href="https://github.com/absoyak/cosmos-demo">Source code and documentation on GitHub</a></p>
+</canvas>
+<noscript><p style="padding:24px">Cosmos is an interactive WebGL2 simulation and needs JavaScript.
+  See the <a href="https://github.com/absoyak/cosmos-demo">project page on GitHub</a>.</p></noscript>
 
 <div id="hud" class="panel">
   <h1>COSMOS</h1>
@@ -60,10 +111,12 @@
   <button id="bTrails" title="T">Trails</button>
   <button id="bFollow" title="F">Follow</button>
   <button id="bOrbit" title="O">Auto-rotate</button>
+  <button id="bShot" title="P">Screenshot</button>
+  <a class="btn" href="https://github.com/absoyak/cosmos-demo" target="_blank" rel="noopener" title="Source code on GitHub">GitHub</a>
 </div>
 
 <div id="help" class="panel"><b>Drag</b> rotate · <b>Wheel</b> zoom · <b>Space</b> pause · <b>N</b> new universe ·
-  <b>T</b> trails · <b>F</b> follow the largest star · <b>O</b> auto-rotate · <b>+/−</b> speed · <b>H</b> hide panels</div>
+  <b>T</b> trails · <b>F</b> follow the largest star · <b>O</b> auto-rotate · <b>+/−</b> speed · <b>P</b> screenshot · <b>H</b> hide panels</div>
 
 <div id="fatal"></div>
 
@@ -640,16 +693,28 @@ const actions = {
   slower() { ui.speed = SPEEDS[Math.max(0, SPEEDS.indexOf(ui.speed) - 1)]; },
   cycle() { ui.speed = SPEEDS[(SPEEDS.indexOf(ui.speed) + 1) % SPEEDS.length]; },
   hud() { for (const id of ['hud', 'bar', 'help']) $(id).classList.toggle('hidden'); },
+  shot() { const a = document.createElement('a'); a.href = snapshot(); a.download = `cosmos-seed${U.seed}-step${stepCount}.png`; a.click(); },
 };
+// Renders one frame (optionally at another resolution) and returns it as a data URL.
+// The WebGL drawing buffer is only readable right after rendering, so both happen in the same task.
+function snapshot(w = canvas.width, h = canvas.height, type = 'image/png', quality = 0.92) {
+  const ow = canvas.width, oh = canvas.height;
+  canvas.width = w; canvas.height = h;
+  render(performance.now() / 1000);
+  const url = canvas.toDataURL(type, quality);
+  canvas.width = ow; canvas.height = oh;
+  return url;
+}
 const run = name => { actions[name](); syncButtons(); };
 $('bPause').onclick = () => run('pause'); $('bNew').onclick = () => run('fresh'); $('bSpeed').onclick = () => run('cycle');
 $('bTrails').onclick = () => run('trails'); $('bFollow').onclick = () => run('follow'); $('bOrbit').onclick = () => run('orbit');
+$('bShot').onclick = () => run('shot');
 $('inCosmos').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { run('fresh'); e.target.blur(); } });
 addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   const name = k === ' ' ? 'pause' : k === 'n' ? 'fresh' : k === 't' ? 'trails' : k === 'f' ? 'follow' : k === 'o' ? 'orbit'
-    : (k === '+' || k === '=') ? 'faster' : (k === '-' || k === '_') ? 'slower' : k === 'h' ? 'hud' : null;
-  if (name) { e.preventDefault(); run(name); }
+    : (k === '+' || k === '=') ? 'faster' : (k === '-' || k === '_') ? 'slower' : k === 'h' ? 'hud' : k === 'p' ? 'shot' : null;
+  if (name && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); run(name); }
 });
 let dragging = false, lastX = 0, lastY = 0;
 canvas.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId); canvas.classList.add('drag'); });
@@ -721,7 +786,7 @@ requestAnimationFrame(tick);
 
 // For poking around from the console:  cosmos.advance(1000); cosmos.measure()
 window.cosmos = {
-  CFG, ui, cam, get state() { return { S, T, U, stats, stepCount }; },
+  CFG, ui, cam, snapshot, get state() { return { S, T, U, stats, stepCount }; },
   restart(c = cosmosParam, sd = seed) { $('inCosmos').value = c; cosmosParam = c; seed = sd; createUniverse(c, sd); },
   advance(n = 100) { for (let i = 0; i < n; i++) step(); gl.finish(); return stepCount; },
   measure() {                                           // synchronous readback + orbit analysis (relative to the largest body)
